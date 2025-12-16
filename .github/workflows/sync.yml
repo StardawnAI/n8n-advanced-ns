@@ -1,7 +1,7 @@
 name: Auto Sync n8n-advanced with Upstream
 on:
   schedule:
-    - cron: '2 * * * *'
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -27,80 +27,60 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Use gh api to avoid rate limits
+          # Use gh CLI (better stability/auth than curl) to avoid rate limits
           LATEST_RELEASE=$(gh release view --repo n8n-io/n8n --json tagName --jq .tagName)
           echo "Syncing with release: $LATEST_RELEASE"
           
           git remote add upstream https://github.com/n8n-io/n8n.git || true
           git fetch upstream --tags --force
           
-          # Try merge with -X ours. If it fails (due to modify/delete conflicts), resolve them manually.
+          # Try merge with -X ours. If it fails, resolve manually in loop.
           if ! git merge "$LATEST_RELEASE" --allow-unrelated-histories -X ours; then
             echo "Merge conflict detected. Starting manual resolution..."
-            
-            # Get list of unmerged files
             CONFLICTS=$(git diff --name-only --diff-filter=U)
             
             for file in $CONFLICTS; do
               echo "Resolving: $file"
-              
-              # Logic:
-              # 1. If file is in .github/workflows (and NOT sync.yml), take UPSTREAM version (Theirs).
-              #    This restores deleted workflow files if upstream modified/kept them.
-              # 2. For everything else, take OUR version.
-              
-              if [[ "$file" == .github/workflows/* ]] && [[ "$file" != ".github/workflows/sync.yml" ]]; then
-                 echo "  -> Taking UPSTREAM version (Theirs) for workflow file"
-                 git checkout --theirs -- "$file"
-                 git add "$file"
+              echo "  -> Taking OUR version (Ours)"
+              if git ls-tree -r HEAD --name-only | grep -q "^$file$"; then
+                # We have the file -> Keep our version
+                git checkout --ours -- "$file"
+                git add "$file"
               else
-                 echo "  -> Taking OUR version (Ours)"
-                 # Check if we deleted the file in our HEAD or if we have it
-                 if git ls-tree -r HEAD --name-only | grep -q "^$file$"; then
-                   # We have the file -> Keep our version
-                   git checkout --ours -- "$file"
-                   git add "$file"
-                 else
-                   # We deleted the file -> Keep it deleted
-                   git rm "$file"
-                 fi
+                # We deleted the file -> Keep it deleted
+                git rm "$file"
               fi
             done
             
-            # Check if conflicts remain
             if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
               echo "ERROR: Unresolved conflicts remain."
-              git status
               exit 1
             fi
             
             git commit -m "Merge release $LATEST_RELEASE (Automatic Conflict Resolution)"
           fi
           
-          # Remove all upstream workflows to avoid "internal" CI failures (benchmarks, docs, etc.)
-          # We only want to keep our own sync.yml
+          # --- WORKFLOW CLEANUP ---
           echo "Cleaning up upstream workflows..."
           
-          # Delete all workflows tracked in git (except sync.yml if it's already there)
+          # 1. Delete ALL workflows in the folder (removes n8n junk + our files temporarily)
           git rm -r --ignore-unmatch .github/workflows/
           
-          # Restore our specific sync.yml from HEAD
-          git checkout HEAD -- .github/workflows/sync.yml
+          # 2. Restore the ENTIRE workflow folder from HEAD
+          # This brings back sync.yml AND any other custom workflows you have added.
+          git checkout HEAD -- .github/workflows/
           
           git add .github/workflows/
           if ! git diff --cached --quiet; then
-            git commit -m "Remove upstream workflows, keeping only sync.yml"
+            git commit -m "Restore all custom workflows from HEAD"
           fi
+          # ------------------------
           
-          # Explicitly set the remote URL with the PAT to ensure we have permission to push workflow files.
-          # The default GITHUB_TOKEN is not allowed to modify .github/workflows/, so we must use a PAT with 'workflow' scope.
           git remote set-url origin https://${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git
-          
           git push origin master
           
       - name: Create our Release
         run: |
-          # Use gh api to avoid rate limits
           LATEST_RELEASE=$(gh release view --repo n8n-io/n8n --json tagName --jq .tagName)
           gh release delete "$LATEST_RELEASE" --repo "$GITHUB_REPOSITORY" -y 2>/dev/null || true
           gh release create "$LATEST_RELEASE" \
