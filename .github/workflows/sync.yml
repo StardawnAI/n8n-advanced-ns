@@ -7,7 +7,6 @@ on:
 permissions:
   contents: write
   actions: read
-  workflows: write
 
 jobs:
   sync:
@@ -77,6 +76,18 @@ jobs:
             git commit -m "Merge release $LATEST_RELEASE (Automatic Conflict Resolution)"
           fi
           
+          # Force restore of upstream workflows (in case we deleted them)
+          echo "Restoring upstream .github/workflows files..."
+          git checkout "$LATEST_RELEASE" -- .github/workflows/
+
+          # Ensure our sync.yml is preserved (revert any changes to it from the checkout above)
+          git checkout HEAD -- .github/workflows/sync.yml
+
+          git add .github/workflows/
+          if ! git diff --cached --quiet; then
+            git commit -m "Restore upstream workflows from $LATEST_RELEASE"
+          fi
+
           git push origin master
           
       - name: Create our Release
