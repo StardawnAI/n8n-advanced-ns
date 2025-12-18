@@ -1,92 +1,50 @@
-name: Auto Sync n8n-advanced with Upstream
+name: Sync n8n-advanced (Pre-Release)
+
 on:
   schedule:
     - cron: '0 * * * *'
   workflow_dispatch:
 
-permissions:
-  contents: write
-  actions: read
-
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GH_PAT }}
-          
-      - name: Configure Git
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Git Config
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          
-      - name: Sync with latest RELEASE (not master)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync Upstream (StardawnAI)
         run: |
-          # Use gh CLI (better stability/auth than curl) to avoid rate limits
-          LATEST_RELEASE=$(gh release view --repo n8n-io/n8n --json tagName --jq .tagName)
-          echo "Syncing with release: $LATEST_RELEASE"
-          
-          git remote add upstream https://github.com/n8n-io/n8n.git || true
-          git fetch upstream --tags --force
-          
-          # Try merge with -X ours. If it fails, resolve manually in loop.
-          if ! git merge "$LATEST_RELEASE" --allow-unrelated-histories -X ours; then
-            echo "Merge conflict detected. Starting manual resolution..."
-            CONFLICTS=$(git diff --name-only --diff-filter=U)
-            
-            for file in $CONFLICTS; do
-              echo "Resolving: $file"
-              echo "   -> Taking OUR version (Ours)"
-              if git ls-tree -r HEAD --name-only | grep -q "^$file$"; then
-                # We have the file -> Keep our version
-                git checkout --ours -- "$file"
-                git add "$file"
-              else
-                # We deleted the file -> Keep it deleted
-                git rm "$file"
-              fi
-            done
-            
-            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
-              echo "ERROR: Unresolved conflicts remain."
-              exit 1
-            fi
-            
-            git commit -m "Merge release $LATEST_RELEASE (Automatic Conflict Resolution)"
-          fi
-          
-          # --- WORKFLOW CLEANUP ---
-          echo "Cleaning up upstream workflows..."
-          
-          # 1. Delete ALL workflows in the folder (removes n8n junk + our files temporarily)
-          git rm -r --ignore-unmatch .github/workflows/
-          
-          # 2. Restore YOUR workflows from the original commit (before the merge happened)
-          # This ensures we get back sync.yml but NOT the upstream 'Test Master' files.
-          git checkout ${{ github.sha }} -- .github/workflows/
-          
-          git add .github/workflows/
-          if ! git diff --cached --quiet; then
-            git commit -m "Restore custom workflows from original state"
-          fi
-          # ------------------------
-          
-          git remote set-url origin https://${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git
-          git push origin master
-          
-      - name: Create our Release
+          git remote add upstream https://github.com/StardawnAI/n8n-advanced.git
+          git fetch upstream
+          # Merge Upstream, Konflikte werden im nächsten Schritt überschrieben
+          git merge upstream/main --no-edit --allow-unrelated-histories || true
+
+      - name: Restore README & Patch Dockerfile
         run: |
-          LATEST_RELEASE=$(gh release view --repo n8n-io/n8n --json tagName --jq .tagName)
-          gh release delete "$LATEST_RELEASE" --repo "$GITHUB_REPOSITORY" -y 2>/dev/null || true
-          gh release create "$LATEST_RELEASE" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "n8n-advanced Release $LATEST_RELEASE" \
-            --notes "RELEASE OF $LATEST_RELEASE with custom enhancements" \
-            --latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 1. Deine README wiederherstellen (Upstream ignorieren)
+          git checkout HEAD -- README.md
+
+          # 2. Dockerfile im .devcontainer patchen (latest -> next)
+          sed -i 's|n8nio/n8n:latest|n8nio/n8n:next|g' .devcontainer/Dockerfile
+
+      - name: Push Changes
+        run: |
+          git add README.md .devcontainer/Dockerfile
+          
+          if git diff-index --quiet HEAD; then
+            echo "Keine Änderungen."
+          else
+            git commit -m "chore: sync upstream and force n8n:next"
+            git push origin main
+          fi
