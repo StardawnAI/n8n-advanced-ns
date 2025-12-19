@@ -70,7 +70,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # 1. Extract the REAL version from package.json (e.g., 2.0.3-exp.0)
-          # We use 'jq' to read the json file safely
           PACKAGE_VERSION=$(jq -r .version package.json)
           
           # 2. Format the tag exactly like official n8n (e.g., n8n@2.0.3-exp.0)
@@ -79,18 +78,17 @@ jobs:
           echo "Detected version in package.json: $PACKAGE_VERSION"
           echo "Target Tag Name: $TAG_NAME"
 
-          # 3. Check if this tag already exists on remote to avoid errors
+          # 3. Check if this tag already exists on YOUR remote (origin)
           if git ls-remote --exit-code --tags origin "$TAG_NAME" >/dev/null 2>&1; then
-            echo "Tag $TAG_NAME already exists. Skipping release creation."
+            echo "Tag $TAG_NAME already exists on remote. Skipping release creation."
             exit 0
           fi
           
-          # 4. Create tag and push it
-          git tag $TAG_NAME
+          # 4. Force create tag (overwrite local upstream tag if exists) and push
+          git tag -f $TAG_NAME
           git push origin $TAG_NAME
 
           # 5. Create GitHub Release via CLI
-          # Explicitly set the target repo to the repo name
           gh release create "$TAG_NAME" \
             --repo ${{ github.repository }} \
             --title "$TAG_NAME" \
