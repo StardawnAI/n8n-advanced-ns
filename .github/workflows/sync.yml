@@ -1,4 +1,4 @@
-name: Sync n8n-advanced (Pre-Release)
+name: Sync n8n-advanced (Latest Force)
 
 on:
   schedule:
@@ -27,7 +27,7 @@ jobs:
         run: |
           git remote add upstream https://github.com/StardawnAI/n8n-advanced.git
           
-          # Standard sync of code from upstream
+          # Standard sync of code
           git fetch upstream
           git merge upstream/main --no-edit --allow-unrelated-histories || true
 
@@ -45,38 +45,35 @@ jobs:
             echo "No changes to commit."
           else
             git commit -m "chore: sync upstream and force n8n:next"
-            # Retry push loop
             for i in {1..5}; do
               git push origin master && break
-              echo "Push failed. Retrying..."
               sleep 10
             done
           fi
 
-      - name: Create Release (Fetch Official Pre-Release Tag)
+      - name: Create Release (Force Latest)
         if: success()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Fetching tags from OFFICIAL n8n repo to find the latest -exp version..."
+          echo "Fetching tags from OFFICIAL n8n repo to find the absolute latest..."
           
-          # 1. Add the OFFICIAL n8n repo as a remote (just to read tags)
+          # 1. Add official n8n remote
           git remote add official https://github.com/n8n-io/n8n.git
           
-          # 2. Fetch tags from official source FORCEFULLY
-          # The --force flag fixes the "would clobber existing tag" error you saw in the logs
+          # 2. Fetch tags FORCEFULLY (to overwrite any local conflicts)
           git fetch official --tags --force
           
-          # 3. Find the absolute latest tag containing "-exp" (Pre-release)
-          # We sort by version (-V) and take the last one.
-          TARGET_TAG=$(git tag --list 'n8n@*-exp*' | sort -V | tail -n 1)
+          # 3. Find the ABSOLUTE LATEST tag (regardless if stable or exp)
+          # We filter for 'n8n@*' tags, sort by Version (-V), and take the last one.
+          TARGET_TAG=$(git tag --list 'n8n@*' | sort -V | tail -n 1)
 
           if [ -z "$TARGET_TAG" ]; then
-            echo "::error::Could not find any -exp tag in the official repo."
+            echo "::error::Could not find any n8n tags."
             exit 1
           fi
 
-          echo "Found latest Official Pre-Release: $TARGET_TAG"
+          echo "Selected Version as Latest: $TARGET_TAG"
 
           # 4. Force this tag onto YOUR repo
           git tag -f "$TARGET_TAG"
@@ -85,10 +82,11 @@ jobs:
           # 5. Clean up old release if exists
           gh release delete "$TARGET_TAG" --yes --repo ${{ github.repository }} || true
           
-          # 6. Create Release marked as PRE-RELEASE
+          # 6. Create Release forced as "LATEST" (Green Badge)
+          # We purposefully REMOVED the --prerelease flag.
           gh release create "$TARGET_TAG" \
             --repo ${{ github.repository }} \
             --title "$TARGET_TAG" \
-            --notes "Automated sync. Code base: n8n-advanced. Docker Image: n8n:next. Version Name: $TARGET_TAG" \
+            --notes "Automated sync. This is the absolute latest version from n8n (mapped to Latest Release). Version: $TARGET_TAG" \
             --target master \
-            --prerelease
+            --latest
