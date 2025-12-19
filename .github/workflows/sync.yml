@@ -27,23 +27,14 @@ jobs:
         run: |
           git remote add upstream https://github.com/StardawnAI/n8n-advanced.git
           
-          # --- RETRY LOOP 1: Git Fetch ---
-          echo "Fetching upstream (5 attempts)..."
-          for i in {1..5}; do
-            git fetch upstream --tags && break
-            echo "Fetch failed (Attempt $i). Waiting 10s..."
-            sleep 10
-          done
-
-          # Merge upstream/main into local master
+          # Standard sync of code from upstream
+          git fetch upstream
           git merge upstream/main --no-edit --allow-unrelated-histories || true
 
       - name: Restore README & Patch Dockerfile
         run: |
-          # 1. Restore YOUR Readme
           git checkout HEAD -- README.md
-
-          # 2. Patch Dockerfile to use n8n:next
+          # Force Dockerfile to use the bleeding edge image
           sed -i 's|n8nio/n8n:latest|n8nio/n8n:next|g' .devcontainer/Dockerfile
 
       - name: Push Changes
@@ -54,44 +45,44 @@ jobs:
             echo "No changes to commit."
           else
             git commit -m "chore: sync upstream and force n8n:next"
-            
-            # --- RETRY LOOP 2: Git Push ---
-            echo "Pushing changes (5 attempts)..."
-            for i in {1..5}; do
-              git push origin master && break
-              echo "Push failed (Attempt $i). Waiting 15s..."
-              sleep 15
-            done
+            git push origin master
           fi
 
-      - name: Create Release (Explicit Pre-Release Tag)
+      - name: Create Release (Fetch Official Pre-Release Tag)
         if: success()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 1. Find the latest tag from upstream that contains "-exp"
-          # This forces us to pick the specific pre-release tag (e.g. n8n@2.0.3-exp.0)
-          # explicitly ignoring standard releases like 2.1.1 or 2.0.3
-          TARGET_TAG=$(git ls-remote --tags --refs --sort='-v:refname' upstream "refs/tags/*-exp*" | head -n 1 | cut -d/ -f3)
+          echo "Fetching tags from OFFICIAL n8n repo to find the latest -exp version..."
+          
+          # 1. Add the OFFICIAL n8n repo as a remote (just to read tags)
+          git remote add official https://github.com/n8n-io/n8n.git
+          
+          # 2. Fetch tags from official source
+          git fetch official --tags
+          
+          # 3. Find the absolute latest tag containing "-exp" (Pre-release)
+          # We sort by version (-V) and take the last one.
+          TARGET_TAG=$(git tag --list 'n8n@*-exp*' | sort -V | tail -n 1)
 
           if [ -z "$TARGET_TAG" ]; then
-            echo "Error: No experimental (-exp) tag found in upstream!"
+            echo "::error::Could not find any -exp tag in the official repo."
             exit 1
           fi
 
-          echo "Selected Pre-Release Tag: $TARGET_TAG"
+          echo "Found latest Official Pre-Release: $TARGET_TAG"
 
-          # 2. Force update this tag on YOUR repo
+          # 4. Force this tag onto YOUR repo
           git tag -f "$TARGET_TAG"
           git push -f origin "$TARGET_TAG"
 
-          # 3. Clean up old release if exists
+          # 5. Clean up old release if exists
           gh release delete "$TARGET_TAG" --yes --repo ${{ github.repository }} || true
           
-          # 4. Create Release marked as PRE-RELEASE (Yellow Badge)
+          # 6. Create Release marked as PRE-RELEASE
           gh release create "$TARGET_TAG" \
             --repo ${{ github.repository }} \
             --title "$TARGET_TAG" \
-            --notes "Automated sync. Matching upstream pre-release tag: $TARGET_TAG" \
+            --notes "Automated sync. Code base: n8n-advanced. Docker Image: n8n:next. Version Name: $TARGET_TAG" \
             --target master \
             --prerelease
