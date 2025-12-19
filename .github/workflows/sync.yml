@@ -1,127 +1,92 @@
-name: Auto Sync n8n-advanced with Upstream
+name: Sync n8n-advanced (Master & Highest Version)
+
 on:
   schedule:
     - cron: '0 * * * *'
   workflow_dispatch:
 
-permissions:
-  contents: write
-  actions: read
-
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GH_PAT }}
-          
-      - name: Configure Git
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Git Config
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Sync Upstream (StardawnAI)
+        run: |
+          git remote add upstream https://github.com/StardawnAI/n8n-advanced.git
           
-      - name: Sync with latest RELEASE (not master)
+          # 1. Fetch code
+          git fetch upstream
+          
+          # 2. Merge MASTER 
+          # This ensures we actually get the code updates. If this fails, the workflow stops.
+          git merge upstream/master --no-edit --allow-unrelated-histories
+
+      - name: Restore README & Patch Dockerfile
+        run: |
+          git checkout HEAD -- README.md
+          # Force n8n:next in Dockerfile
+          sed -i 's|n8nio/n8n:latest|n8nio/n8n:next|g' .devcontainer/Dockerfile
+
+      - name: Push Changes
+        run: |
+          git add README.md .devcontainer/Dockerfile
+          
+          if git diff-index --quiet HEAD; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: sync upstream and force n8n:next"
+            for i in {1..5}; do
+              git push origin master && break
+              sleep 10
+            done
+          fi
+
+      - name: Create Release (Highest Version Number)
+        if: success()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # --- RETRY LOOP 1: Get Version ---
-          echo "Fetching Latest Release (5 attempts)..."
-          for i in {1..5}; do
-            LATEST_RELEASE=$(gh release view --repo n8n-io/n8n --json tagName --jq .tagName) && break
-            echo "Error fetching version (Attempt $i). Waiting 10s..."
-            sleep 10
-          done
+          echo "Fetching official tags to find the HIGHEST version number..."
+          
+          # 1. Fetch tags from official repo
+          git remote add official https://github.com/n8n-io/n8n.git
+          git fetch official --tags --force
+          
+          # 2. Find the HIGHEST version number (SemVer sorting)
+          # Takes ALL tags, sorts by Version, picks the highest.
+          TARGET_TAG=$(git tag --list 'n8n@*' | sort -V | tail -n 1)
 
-          if [ -z "$LATEST_RELEASE" ]; then
-            echo "CRITICAL: Could not find release tag. Aborting."
+          if [ -z "$TARGET_TAG" ]; then
+            echo "::error::No tags found."
             exit 1
           fi
-          
-          echo "Syncing with release: $LATEST_RELEASE"
-          
-          git remote add upstream https://github.com/n8n-io/n8n.git || true
-          
-          # --- RETRY LOOP 2: Git Fetch ---
-          echo "Running git fetch (with retries)..."
-          for i in {1..5}; do
-            git fetch upstream --tags --force && break
-            echo "Git fetch failed (Attempt $i). Waiting 10s..."
-            sleep 10
-          done
-          
-          # Try merge with -X ours. If it fails, resolve manually in loop.
-          if ! git merge "$LATEST_RELEASE" --allow-unrelated-histories -X ours; then
-            echo "Merge conflict detected. Starting manual resolution..."
-            CONFLICTS=$(git diff --name-only --diff-filter=U)
-            
-            for file in $CONFLICTS; do
-              echo "Resolving: $file"
-              echo "   -> Taking OUR version (Ours)"
-              if git ls-tree -r HEAD --name-only | grep -q "^$file$"; then
-                # We have the file -> Keep our version
-                git checkout --ours -- "$file"
-                git add "$file"
-              else
-                # We deleted the file -> Keep it deleted
-                git rm "$file"
-              fi
-            done
-            
-            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
-              echo "ERROR: Unresolved conflicts remain."
-              exit 1
-            fi
-            
-            git commit -m "Merge release $LATEST_RELEASE (Automatic Conflict Resolution)"
-          fi
-          
-          # --- WORKFLOW CLEANUP ---
-          echo "Cleaning up upstream workflows..."
-          
-          # 1. Delete ALL workflows in the folder (removes n8n junk + our files temporarily)
-          git rm -r --ignore-unmatch .github/workflows/
-          
-          # 2. Restore YOUR workflows from the original commit
-          git checkout ${{ github.sha }} -- .github/workflows/
-          
-          git add .github/workflows/
-          if ! git diff --cached --quiet; then
-            git commit -m "Restore custom workflows from original state"
-          fi
-          # ------------------------
-          
-          git remote set-url origin https://${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git
-          
-          # --- RETRY LOOP 3: Git Push ---
-          for i in {1..5}; do
-             git push origin master && break
-             echo "Git push failed (Attempt $i). Waiting 15s..."
-             sleep 15
-          done
-          
-      - name: Create our Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Fetch tag again to be safe
-          LATEST_RELEASE=$(gh release view --repo n8n-io/n8n --json tagName --jq .tagName)
 
-          # --- RETRY LOOP 4: Create Release (The Critical Part) ---
-          echo "Creating Release on GitHub (5 attempts)..."
-          for i in {1..5}; do
-            (
-              # Subshell to retry the entire block
-              gh release delete "$LATEST_RELEASE" --repo "$GITHUB_REPOSITORY" -y 2>/dev/null || true
-              gh release create "$LATEST_RELEASE" \
-                --repo "$GITHUB_REPOSITORY" \
-                --title "n8n-advanced Release $LATEST_RELEASE" \
-                --notes "RELEASE OF $LATEST_RELEASE with custom enhancements" \
-                --latest
-            ) && break
-            
-            echo "Release creation failed (Attempt $i). Waiting 20 seconds..."
-            sleep 20
-          done
+          echo "Selected Highest Version: $TARGET_TAG"
+
+          # 3. Force update tag on your repo
+          git tag -f "$TARGET_TAG"
+          git push -f origin "$TARGET_TAG"
+
+          # 4. Clean old release
+          gh release delete "$TARGET_TAG" --yes --repo ${{ github.repository }} || true
+          
+          # 5. Create Release as LATEST
+          gh release create "$TARGET_TAG" \
+            --repo ${{ github.repository }} \
+            --title "$TARGET_TAG" \
+            --notes "Automated sync. Highest version number found: $TARGET_TAG" \
+            --target master \
+            --latest
