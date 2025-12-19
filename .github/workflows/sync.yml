@@ -30,7 +30,7 @@ jobs:
           # --- RETRY LOOP 1: Git Fetch ---
           echo "Fetching upstream (5 attempts)..."
           for i in {1..5}; do
-            git fetch upstream && break
+            git fetch upstream --tags && break
             echo "Fetch failed (Attempt $i). Waiting 10s..."
             sleep 10
           done
@@ -43,7 +43,7 @@ jobs:
           # 1. Restore YOUR Readme
           git checkout HEAD -- README.md
 
-          # 2. Patch Dockerfile in .devcontainer (force latest -> next)
+          # 2. Patch Dockerfile to use n8n:next
           sed -i 's|n8nio/n8n:latest|n8nio/n8n:next|g' .devcontainer/Dockerfile
 
       - name: Push Changes
@@ -64,40 +64,34 @@ jobs:
             done
           fi
 
-      - name: Create Release from Docker Version
+      - name: Create Release (Explicit Pre-Release Tag)
         if: success()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Pulling n8n:next to determine the REAL version..."
-          docker pull n8nio/n8n:next
-          
-          # Run n8n inside docker to get the exact version string (e.g. 2.0.3-exp.0)
-          REAL_VERSION=$(docker run --rm --entrypoint n8n n8nio/n8n:next --version)
-          
-          # Clean up output (remove newlines)
-          REAL_VERSION=$(echo "$REAL_VERSION" | tr -d '\r\n')
-          
-          TAG_NAME="n8n@${REAL_VERSION}"
-          
-          echo "Detected Docker Version: $REAL_VERSION"
-          echo "Target Tag: $TAG_NAME"
-          
-          # --- Force Update Tag ---
-          git tag -f "$TAG_NAME"
-          git push -f origin "$TAG_NAME"
+          # 1. Find the latest tag from upstream that contains "-exp"
+          # This forces us to pick the specific pre-release tag (e.g. n8n@2.0.3-exp.0)
+          # explicitly ignoring standard releases like 2.1.1 or 2.0.3
+          TARGET_TAG=$(git ls-remote --tags --refs --sort='-v:refname' upstream "refs/tags/*-exp*" | head -n 1 | cut -d/ -f3)
 
-          # --- Manage GitHub Release ---
-          # 1. Delete old release if it exists to avoid 422 errors
-          echo "Deleting existing release (if any)..."
-          gh release delete "$TAG_NAME" --yes --repo ${{ github.repository }} || true
+          if [ -z "$TARGET_TAG" ]; then
+            echo "Error: No experimental (-exp) tag found in upstream!"
+            exit 1
+          fi
+
+          echo "Selected Pre-Release Tag: $TARGET_TAG"
+
+          # 2. Force update this tag on YOUR repo
+          git tag -f "$TARGET_TAG"
+          git push -f origin "$TARGET_TAG"
+
+          # 3. Clean up old release if exists
+          gh release delete "$TARGET_TAG" --yes --repo ${{ github.repository }} || true
           
-          # 2. Create the new release
-          echo "Creating new release..."
-          gh release create "$TAG_NAME" \
+          # 4. Create Release marked as PRE-RELEASE (Yellow Badge)
+          gh release create "$TARGET_TAG" \
             --repo ${{ github.repository }} \
-            --title "$TAG_NAME" \
-            --notes "Automated sync. Based on n8n:next version: $REAL_VERSION" \
+            --title "$TARGET_TAG" \
+            --notes "Automated sync. Matching upstream pre-release tag: $TARGET_TAG" \
             --target master \
-            --prerelease \
-            --latest
+            --prerelease
