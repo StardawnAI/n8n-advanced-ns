@@ -75,14 +75,19 @@ jobs:
 
           echo "Selected Highest Version: $TARGET_TAG"
 
-          # 3. Force update tag on your repo
+          # --- NEW CHECK: Stop if release already exists ---
+          if gh release view "$TARGET_TAG" --repo ${{ github.repository }} > /dev/null 2>&1; then
+            echo "Release $TARGET_TAG already exists. Skipping release creation."
+            exit 0
+          fi
+          # -------------------------------------------------
+
+          # 3. Force update tag on repo
           git tag -f "$TARGET_TAG"
           git push -f origin "$TARGET_TAG"
 
-          # 4. Clean old release
-          gh release delete "$TARGET_TAG" --yes --repo ${{ github.repository }} || true
-          
-          # 5. Create Release as LATEST
+          # 4. Create Release as LATEST
+          # (Note: Removed 'gh release delete' as we only run this if it creates a NEW release)
           gh release create "$TARGET_TAG" \
             --repo ${{ github.repository }} \
             --title "$TARGET_TAG" \
